@@ -11,6 +11,8 @@ const CategoryEnum = z.enum([
   "other",
 ]);
 
+const securitySeverityEnum = z.enum(["critical", "high", "moderate", "low"]);
+
 const PRInputSchema = z.object({
   diff: z.string().describe("PR diff"),
 });
@@ -41,8 +43,40 @@ const PROutputSchema = z.object({
       recommendation: z
         .string()
         .describe("Specific, actionable advice on how to fix the issue"),
+      codeSnippet: z.object({
+        current: z
+          .string()
+          .describe("// The problematic code exactly as it appears"),
+        suggested: z
+          .string()
+          .describe("// The improved/fixed version of the code"),
+        language: z
+          .string()
+          .describe("javascript|typescript|python|go|rust|java|etc"),
+      }),
     })
   ),
+  securityAudit: z.object({
+    hasVulnerabilities: z.boolean().describe("if a package has vulnerability"),
+    vulnerabilities: z.array(
+      z.object({
+        package: z.string().describe("package-name"),
+        version: z.string().describe("current version"),
+        vulnerability: z
+          .string()
+          .describe(
+            "**Description** of the vulnerability (markdown formatted)"
+          ),
+        severity: securitySeverityEnum.describe("package severity"),
+        cve: z.string().describe("CVE identifier if available"),
+        recommendation: z
+          .string()
+          .describe("How to fix with markdown formatting and `code examples`"),
+        patchedVersion: z.string().describe("Version that fixes the issue"),
+      })
+    ),
+    table: z.string().describe("Markdown formatted table of vulnerabilities"),
+  }),
 });
 export type PROutput = z.infer<typeof PROutputSchema>;
 
@@ -65,14 +99,34 @@ Provide your response as a JSON object with this exact structure:
   "summary": "A concise 2-3 sentence overview of the changes and overall code quality",
   "suggestions": [
     {
-      "issue": "Clear description of the specific issue found",
+      "issue": "**Clear description** of the specific issue found (use markdown formatting: **bold**, \`code\`, etc.)",
       "severity": 1-5 (1=critical/blocking, 2=major, 3=moderate, 4=minor, 5=trivial),
       "category": "security" | "performance" | "readability" | "maintainability" | "style" | "other",
       "filePath": "The full file path from the diff (e.g., 'src/api/users.ts')",
       "lineNumber": The specific line number where the issue occurs (as integer, e.g., 45),
-      "recommendation": "Specific, actionable advice on how to fix the issue"
+      "recommendation": "Specific, actionable advice formatted in markdown. Use:\n- **Bold** for emphasis\n- \`inline code\` for variables/functions\n- Bullet points for steps\n- Links if referencing docs",
+      "codeSnippet": {
+        "current": "The problematic code exactly as it appears (use markdown formatting: **bold**, \`code\`, etc.)",
+        "suggested": "The improved/fixed version of the code (use markdown formatting: **bold**, \`code\`, etc.)",
+        "language": "javascript|typescript|python|go|rust|java|etc"
+      }
     }
-  ]
+  ],
+  "securityAudit": {
+    "hasVulnerabilities": true/false,
+    "vulnerabilities": [
+      {
+        "package": "package-name",
+        "version": "current version",
+        "vulnerability": "**Description** of the vulnerability (markdown formatted)",
+        "severity": "critical" | "high" | "moderate" | "low",
+        "cve": "CVE identifier if available",
+        "recommendation": "How to fix with markdown formatting and \`code examples\`",
+        "patchedVersion": "Version that fixes the issue"
+      }
+    ],
+    "table": "Markdown formatted table of vulnerabilities"
+  }
 }
 
 **Important for Line Numbers & File Paths:**
@@ -82,6 +136,36 @@ Provide your response as a JSON object with this exact structure:
 - Each suggestion must have a valid filePath and lineNumber for GitHub commenting
 - Line numbers should be positive integers representing the position in the modified file
 
+**Code Snippets in Suggestions:**
+- ALWAYS include a \`codeSnippet\` object when the fix involves code changes
+- \`current\`: Extract the exact problematic code from the diff (preserve indentation and context)
+- \`suggested\`: Provide the corrected/improved version with the same context
+- \`language\`: Specify the programming language for proper syntax highlighting
+- Keep snippets concise (5-15 lines) but include enough context to understand the fix
+- If the fix is conceptual or doesn't involve code, omit the \`codeSnippet\` field
+
+**Markdown Formatting Guidelines:**
+- Use **bold** for emphasis on critical terms
+- Use \`inline code\` for variable names, function names, and code references
+- Use bullet points or numbered lists in recommendations for multi-step fixes
+- Include code blocks in recommendations only if showing inline examples (not duplicating codeSnippet)
+- Keep markdown clean and GitHub-compatible
+
+**Security Audit (if package.json or similar dependency files are included):**
+When package.json, package-lock.json, requirements.txt, go.mod, Cargo.toml, or similar dependency files are present in the diff:
+1. Analyze all dependencies (both dependencies and devDependencies)
+2. Check for known security vulnerabilities using your knowledge of CVE databases
+3. Identify outdated packages with known security issues
+4. Flag packages with critical/high severity vulnerabilities
+5. Provide the securityAudit section with:
+   - A list of vulnerable packages with details
+   - A markdown table with columns: Package | Version | Severity | Vulnerability | CVE | Recommendation
+   - Table format example:
+     | Package | Version | Severity | Vulnerability | CVE | Recommendation |
+     |---------|---------|----------|---------------|-----|----------------|
+     | express | 4.17.1 | High | Denial of Service vulnerability | CVE-2022-24999 | Upgrade to 4.18.2+ |
+
+
 **Severity Guidelines:**
 - **1 (Critical)**: Security vulnerabilities, data loss risks, breaking changes, major bugs
 - **2 (Major)**: Significant performance issues, violated best practices, poor error handling
@@ -89,9 +173,18 @@ Provide your response as a JSON object with this exact structure:
 - **4 (Minor)**: Style inconsistencies, minor refactoring opportunities, documentation gaps
 - **5 (Trivial)**: Nitpicks, optional improvements, subjective preferences
 
+**Security Vulnerability Severity:**
+- **Critical**: RCE, authentication bypass, data breach potential
+- **High**: XSS, SQL injection, privilege escalation
+- **Moderate**: Information disclosure, DoS vulnerabilities
+- **Low**: Minor information leaks, deprecated features
+
+
 **Review Principles:**
 - First identify the programming language(s) from file extensions and code syntax
 - Apply language-specific recommendations (e.g., prefer list comprehensions in Python, use optional chaining in TypeScript, leverage Go's defer for cleanup, use Rust's Result type for error handling)
+- Format all issue descriptions and recommendations using markdown
+- ALWAYS provide code snippets with before/after examples when suggesting code changes
 - Be constructive and specific in feedback
 - Explain *why* something is an issue, not just *what*
 - Provide concrete examples or code snippets in recommendations
@@ -99,8 +192,10 @@ Provide your response as a JSON object with this exact structure:
 - Consider the context and trade-offs
 - Focus on impactful issues over nitpicks
 - Flag anything that could cause production issues
+- Make recommendations actionable and copy-paste ready when possible
 
-If the diff shows good practices, acknowledge them in the summary but focus suggestions on improvements.`;
+If the diff shows good practices, acknowledge them in the summary but focus suggestions on improvements.
+If no package.json or dependency files are in the diff, omit the securityAudit section entirely.`;
 
 const prompt = ai.definePrompt({
   name: "PR-review-prompt",
@@ -135,8 +230,46 @@ const prompt = ai.definePrompt({
           recommendation: z
             .string()
             .describe("Specific, actionable advice on how to fix the issue"),
+          codeSnippet: z.object({
+            current: z
+              .string()
+              .describe("// The problematic code exactly as it appears"),
+            suggested: z
+              .string()
+              .describe("// The improved/fixed version of the code"),
+            language: z
+              .string()
+              .describe("javascript|typescript|python|go|rust|java|etc"),
+          }),
         })
       ),
+      securityAudit: z.object({
+        hasVulnerabilities: z
+          .boolean()
+          .describe("if a package has vulnerability"),
+        vulnerabilities: z.array(
+          z.object({
+            package: z.string().describe("package-name"),
+            version: z.string().describe("current version"),
+            vulnerability: z
+              .string()
+              .describe(
+                "**Description** of the vulnerability (markdown formatted)"
+              ),
+            severity: securitySeverityEnum.describe("package severity"),
+            cve: z.string().describe("CVE identifier if available"),
+            recommendation: z
+              .string()
+              .describe(
+                "How to fix with markdown formatting and `code examples`"
+              ),
+            patchedVersion: z.string().describe("Version that fixes the issue"),
+          })
+        ),
+        table: z
+          .string()
+          .describe("Markdown formatted table of vulnerabilities"),
+      }),
     }),
   },
   prompt: PR_REVIEW_SYSTEM_PROMPT,
